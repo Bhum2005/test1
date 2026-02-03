@@ -37,8 +37,10 @@ bool autoStarted = true;
 
 bool btnLast = LOW;
 bool lock = false;
-
-long currentAngle = 0;      
+// --- ตัวแปรเก็บค่า ---
+long totalSteps = 0;      // เก็บจำนวน Step ทั้งหมดที่หมุนไป (เป็นค่าติดลบได้)
+float currentAngle = 0.0; /
+     
 int ldr_value = 0;
 
 void reset(); 
@@ -74,6 +76,7 @@ void reset() {
       Serial.print("Returning: ");
       Serial.println(angleDiff);
 
+      // คำนวณ Step
       int stepsToMove = (int)((float)angleDiff / 360.0 * stepsPerRevolution);
       myStepper.step(stepsToMove);
       
@@ -116,7 +119,7 @@ void setup() {
  
   client.begin(mqtt_broker, MQTT_PORT, net);
   client.onMessage(messageReceived);
-  
+  delay(1000);
   connect();
 }
 
@@ -131,8 +134,8 @@ void loop() {
     delay(50);
   }
   btnLast = btnNow; 
-
-
+  int stepSize = 32;
+  
   int raw_value = analogRead(LDR);
   ldr_value = map(raw_value, 0, 4095, 0, 1023);
 
@@ -164,16 +167,18 @@ void loop() {
     client.publish(mqtt_status, "Working");
     digitalWrite(LED, HIGH);
     
-    myStepper.step(512); 
-    currentAngle += 90; 
+    myStepper.step(stepSize);
+    totalSteps += stepSize;
+    currentAngle = ((float)totalSteps / stepsPerRevolution) * 360.0;
     
   } else if (motorState == 2 && lock == false) {
     client.publish(mqtt_status, "Reverse"); 
     digitalWrite(LED, LOW);
     
-    myStepper.step(-512); 
-    currentAngle -= 90; 
-
+    myStepper.step(stepSize);
+    totalSteps += stepSize;
+    currentAngle = ((float)totalSteps / stepsPerRevolution) * 360.0;
+    
   } else if (motorState == 0 && lock == false) {
 
     digitalWrite(23, LOW);
