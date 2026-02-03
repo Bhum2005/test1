@@ -43,8 +43,6 @@ float currentAngle = 0.0; /
      
 int ldr_value = 0;
 
-void reset(); 
-
 void messageReceived(String &topic, String &payload) { 
   
 
@@ -81,6 +79,7 @@ void reset() {
       myStepper.step(stepsToMove);
       
       currentAngle = 0;
+      totalstep=0;
    }
    
    if(autoMode){
@@ -175,10 +174,10 @@ void loop() {
     client.publish(mqtt_status, "Reverse"); 
     digitalWrite(LED, LOW);
     
-    myStepper.step(stepSize);
+    myStepper.step(-stepSize);
     totalSteps += stepSize;
     currentAngle = ((float)totalSteps / stepsPerRevolution) * 360.0;
-    
+
   } else if (motorState == 0 && lock == false) {
 
     digitalWrite(23, LOW);
