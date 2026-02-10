@@ -193,3 +193,216 @@ void loop() {
     client.publish(mqtt_modestatus, autoMode ? "Auto" : "Manual"); 
 
 }
+
+#include <WiFi.h>
+#include <PubSubClient.h>
+#include <Wire.h>
+#include <LCD_I2C.h>
+
+// --- 1. ตั้งค่า WiFi และ MQTT ---
+const char ssid[] = "@JumboPlusIoT";
+const char pass[] = "group014";
+const char mqtt_broker[] = "test.mosquitto.org";
+const char mqtt_client_id[] = "esp32_group14_auto";// เปลี่ยนให้ไม่ซ้ำกับคนอื่น
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+// --- 2. ตั้งค่าอุปกรณ์ Hardware ---
+LCD_I2C lcd(0x27, 16, 2); 
+
+// const int pinEN1 = 12; 
+const int pinIN1 = 25; 
+const int pinIN2 = 23; 
+const int ledStatus = 18; 
+const int buttonPin = 19; 
+
+// --- 3. ตัวแปรสถานะและ Debounce ---
+int mode = 0;           // 0:Stop, 1:Reverse, 2:Forward
+int lastMoveMode = 1;   // เก็บสถานะการหมุนล่าสุด (เริ่มต้นให้เป็น 1)
+bool lastButtonState = HIGH;
+unsigned long lastDebounceTime = 0;
+unsigned long debounceDelay = 50;
+
+// ฟังก์ชันสั่งการมอเตอร์และอัปเดตสถานะ (LCD + MQTT + LED)
+void updateAction(int newMode) {
+  mode = newMode;
+  lcd.clear();
+  lcd.setCursor(0, 0);
+
+  if (mode == 1) { // ทวนเข็ม
+   digitalWrite(pinIN1, HIGH); digitalWrite(pinIN2, LOW);
+    digitalWrite(ledStatus, HIGH);
+    lcd.print("Motor: REVERSE");
+    lcd.setCursor(0, 1); lcd.print("LED: ON");
+    lastMoveMode = 1;
+    client.publish("esp32/motor/status", "REVERSE");
+    client.publish("esp32/led/status", "ON");
+  } 
+  else if (mode == 2) { // ตามเข็ม
+     digitalWrite(pinIN1, LOW); digitalWrite(pinIN2, HIGH);
+    digitalWrite(ledStatus, HIGH);
+    lcd.print("Motor: FORWARD");
+    lcd.setCursor(0, 1); lcd.print("LED: ON");
+    lastMoveMode = 2;
+    client.publish("esp32/motor/status", "FORWARD");
+    client.publish("esp32/led/status", "ON");
+  } 
+  else { // หยุด (mode 3 หรือค่าอื่นๆ)
+    digitalWrite(pinIN1, LOW); digitalWrite(pinIN2, LOW);
+    digitalWrite(ledStatus, LOW);
+    lcd.print("Motor: STOPPED");
+    lcd.setCursor(0, 1); lcd.print("LED: OFF");
+    client.publish("esp32/motor/status", "STOPPED");
+    client.publish("esp32/led/status", "OFF");
+    mode = 3; 
+  }
+}
+
+// ฟังก์ชันรับข้อความจาก MQTT
+void callback(char* topic, byte* payload, unsigned int length) {
+  String message = "";
+  for (int i = 0; i < length; i++) message += (char)payload[i];
+  
+  if (String(topic) == "esp32/motor/control") {
+    if (message == "FORWARD") updateAction(2);
+    else if (message == "REVERSE") updateAction(1);
+    else if (message == "STOP") updateAction(3);
+  }
+  else if (String(topic) == "esp32/led/control") {
+    if (message == "ON") {
+      // เงื่อนไข: ให้มอเตอร์หมุนกลับด้านจากครั้งก่อนหน้า
+      if (lastMoveMode == 1) updateAction(2);
+      else updateAction(1);
+    }
+    else if (message == "OFF") {
+      updateAction(3);
+    }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  Wire.begin(21, 22);
+  
+  // เริ่มต้น LCD
+  lcd.begin(); 
+  lcd.backlight();
+  lcd.print("WiFi Connecting");
+
+  // ขามอเตอร์และปุ่ม
+  pinMode(pinIN1, OUTPUT); pinMode(pinIN2, OUTPUT);
+  pinMode(ledStatus, OUTPUT); 
+  pinMode(buttonPin, INPUT_PULLUP);
+
+  // เชื่อมต่อ WiFi
+  WiFi.begin(ssid, pass);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  
+  lcd.clear();
+  lcd.print("WiFi Connected");
+  client.setServer(mqtt_broker, 1883);
+  client.setCallback(callback);
+}
+
+void reconnect() {
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    if (client.connect(mqtt_client_id)) {
+      Serial.println("connected");
+      client.subscribe("esp32/motor/control");
+      client.subscribe("esp32/led/control");
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      delay(5000);
+    }
+  }
+}
+
+void loop() {
+  if (!client.connected()) reconnect();
+  client.loop();
+
+  // ระบบปุ่มกด Physical Button (วนโหมด 1-2-3)
+  int reading = digitalRead(buttonPin);
+  if (reading != lastButtonState) {
+    lastDebounceTime = millis();
+  }
+
+  if ((millis() - lastDebounceTime) > debounceDelay) {
+    static bool buttonPressed = false;
+    if (reading == LOW && !buttonPressed) {
+      buttonPressed = true;
+      mode++;
+      if (mode > 3) mode = 1;
+      updateAction(mode);
+    } else if (reading == HIGH) {
+      buttonPressed = false;
+    }
+  }
+  lastButtonState = reading;
+}
+
+#include <ESP32Servo.h>
+
+Servo myservo;
+const int ldrPin = 34;
+const int servoPin = 18;
+
+void setup() {
+  Serial.begin(115200);
+  myservo.attach(servoPin);
+}
+
+void loop() {
+  int ldrValue = analogRead(ldrPin); // อ่านค่า 0-4095
+
+  // กรณี A: แสงมาก = หมุนเร็วทางขวา, แสงน้อย = หยุด
+  // map ค่า 0-4095 ไปเป็น 90-180 (90 คือหยุด, 180 คือเร็วสุด)
+  int speedVal = map(ldrValue, 0, 4095, 90, 180);
+
+  myservo.write(speedVal);
+
+  Serial.print("LDR: ");
+  Serial.print(ldrValue);
+  Serial.print(" | Servo Val: ");
+  Serial.println(speedVal);
+  
+  delay(50);
+}
+
+const int ldrPin = 34;      // ขาที่ต่อ LDR (ต้องเป็นขาที่อ่าน Analog ได้)
+const int motorPin = 18;    // ขาที่ต่อเข้า Driver Motor (ENA หรือ IN1)
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(motorPin, OUTPUT);
+}
+
+void loop() {
+  // 1. อ่านค่าจาก LDR (ค่าที่ได้จะอยู่ระหว่าง 0 - 4095)
+  int ldrValue = analogRead(ldrPin);
+
+  // 2. แปลงค่า (Mapping)
+  // map(ค่าดิบ, ค่าต่ำสุดเดิม, ค่าสูงสุดเดิม, ค่าต่ำสุดใหม่, ค่าสูงสุดใหม่);
+  // แปลงจาก 0-4095 ให้เหลือ 0-255 สำหรับ PWM
+  int motorSpeed = map(ldrValue, 0, 4095, 0, 255);
+
+  // *ลูกเล่นเสริม: ถ้าอยากให้ ยิ่งมืด ยิ่งหมุนเร็ว ให้สลับเลขข้างหลัง
+  // int motorSpeed = map(ldrValue, 0, 4095, 255, 0);
+
+  // 3. สั่งงาน Motor
+  analogWrite(motorPin, motorSpeed); // สำหรับ ESP32 เวอร์ชั่นใหม่ใช้คำสั่งนี้ได้เลย
+
+  // แสดงผลดูค่า
+  Serial.print("LDR: ");
+  Serial.print(ldrValue);
+  Serial.print(" | Speed: ");
+  Serial.println(motorSpeed);
+
+  delay(50);
+}
